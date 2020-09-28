@@ -1,3 +1,5 @@
+[Updated version, Bosch driver 3.5.0, esp-idf 4.1]
+
 Sample code for reading values from a BME280 via ESP-IDF's I2C master driver
 ====================
 

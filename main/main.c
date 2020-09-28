@@ -8,8 +8,8 @@
 
 #include "bme280.h"
 
-#define SDA_PIN GPIO_NUM_15
-#define SCL_PIN GPIO_NUM_2
+#define SDA_PIN GPIO_NUM_21
+#define SCL_PIN GPIO_NUM_22
 #define BME280_ADDRESS BME280_I2C_ADDR_SEC
 
 #define TAG_BME280 "BME280"
@@ -20,6 +20,12 @@
 #define BME280_CALLBACK_OK 0
 #define BME280_CALLBACK_FAIL -1
 
+struct identifier
+{
+    /* Variable to hold device address */
+    uint8_t dev_addr;
+};
+
 void i2c_master_init()
 {
 	i2c_config_t i2c_config = {
@@ -28,21 +34,24 @@ void i2c_master_init()
 		.scl_io_num = SCL_PIN,
 		.sda_pullup_en = GPIO_PULLUP_ENABLE,
 		.scl_pullup_en = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = 40000
+		.master.clk_speed = 100000
 	};
 	i2c_param_config(I2C_NUM_0, &i2c_config);
 	i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
 }
 
-uint8_t BME280_I2C_bus_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t cnt)
+int8_t BME280_I2C_bus_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t cnt, void *intf_ptr)
 {
 	int8_t iError = 0;
+    struct identifier id;
+
+    id = *((struct identifier *)intf_ptr);
 
 	esp_err_t espRc;
 	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
 
 	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
+	i2c_master_write_byte(cmd, (id.dev_addr << 1) | I2C_MASTER_WRITE, true);
 
 	i2c_master_write_byte(cmd, reg_addr, true);
 	i2c_master_write(cmd, reg_data, cnt, true);
@@ -59,19 +68,22 @@ uint8_t BME280_I2C_bus_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_da
 	return iError;
 }
 
-int8_t BME280_I2C_bus_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data, uint16_t cnt)
+int8_t BME280_I2C_bus_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t cnt, void *intf_ptr)
 {
 	int8_t iError = 0;
 	esp_err_t espRc;
+    struct identifier id;
+
+    id = *((struct identifier *)intf_ptr);
 
 	i2c_cmd_handle_t cmd = i2c_cmd_link_create();
 
 	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_WRITE, true);
+	i2c_master_write_byte(cmd, (id.dev_addr << 1) | I2C_MASTER_WRITE, true);
 	i2c_master_write_byte(cmd, reg_addr, true);
 
 	i2c_master_start(cmd);
-	i2c_master_write_byte(cmd, (dev_addr << 1) | I2C_MASTER_READ, true);
+	i2c_master_write_byte(cmd, (id.dev_addr << 1) | I2C_MASTER_READ, true);
 
 	if (cnt > 1) {
 		i2c_master_read(cmd, reg_data, cnt-1, I2C_MASTER_ACK);
@@ -91,9 +103,9 @@ int8_t BME280_I2C_bus_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data
 	return iError;
 }
 
-void BME280_delay_msek(uint32_t msek)
+void BME280_delay_us(uint32_t v, void *intf_ptr)
 {
-	vTaskDelay(msek/portTICK_PERIOD_MS);
+	vTaskDelay(v/1000/portTICK_PERIOD_MS);
 }
 
 
@@ -103,13 +115,19 @@ void task_bme280_normal_mode(void *ignore)
 		.write = BME280_I2C_bus_write,
 		.read = BME280_I2C_bus_read,
 		.intf = BME280_I2C_INTF,
-		.dev_id = BME280_ADDRESS,
-		.delay_ms = BME280_delay_msek
+		.delay_us = BME280_delay_us
 	};
 
 	int32_t com_rslt;
 	uint8_t settings_sel;
 	struct bme280_data comp_data;
+
+    struct identifier id;
+
+    id.dev_addr = BME280_I2C_ADDR_PRIM;
+
+    bme280.intf_ptr = &id;
+
 
 	com_rslt = bme280_init(&bme280);
 
@@ -117,7 +135,7 @@ void task_bme280_normal_mode(void *ignore)
 	bme280.settings.osr_t = BME280_OVERSAMPLING_2X;
 	bme280.settings.osr_h = BME280_OVERSAMPLING_1X;
 	bme280.settings.filter = BME280_FILTER_COEFF_16;
-	bme280.settings.standby_time = BME280_STANDBY_TIME_1_MS;
+	bme280.settings.standby_time = BME280_STANDBY_TIME_10_MS;
 
 	settings_sel = BME280_OSR_PRESS_SEL;
 	settings_sel |= BME280_OSR_TEMP_SEL;
@@ -127,15 +145,15 @@ void task_bme280_normal_mode(void *ignore)
 
 	com_rslt += bme280_set_sensor_settings(settings_sel, &bme280);
 	com_rslt += bme280_set_sensor_mode(BME280_NORMAL_MODE, &bme280);
-				
+
 	if (com_rslt == BME280_OK) {
 		while(true) {
-			bme280.delay_ms(40);
+			bme280.delay_us(40000, NULL);
 
 			com_rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &bme280);
 
 			if (com_rslt == BME280_OK) {
-				ESP_LOGI(TAG_BME280, "%0.2f degC / %.2f kPa / %.2f %%", comp_data.temperature/100.0, comp_data.pressure/100.0, comp_data.humidity/1024.0);
+				ESP_LOGI(TAG_BME280, "%0.2lf degC / %.2lf kPa / %0.2lf %%", comp_data.temperature, comp_data.pressure/100.0, comp_data.humidity);
 			} else {
 				ESP_LOGE(TAG_BME280, "measure error. code: %d", com_rslt);
 			}
@@ -152,8 +170,7 @@ void task_bme280_forced_mode(void *ignore) {
 		.write = BME280_I2C_bus_write,
 		.read = BME280_I2C_bus_read,
 		.intf = BME280_I2C_INTF,
-		.dev_id = BME280_ADDRESS,
-		.delay_ms = BME280_delay_msek
+		.delay_us = BME280_delay_us
 	};
 
 	int32_t com_rslt;
@@ -170,12 +187,12 @@ void task_bme280_forced_mode(void *ignore) {
 	settings_sel = BME280_OSR_PRESS_SEL | BME280_OSR_TEMP_SEL | BME280_OSR_HUM_SEL | BME280_FILTER_SEL;
 
 	com_rslt += bme280_set_sensor_settings(settings_sel, &bme280);
-				
+
 	if (com_rslt == BME280_OK) {
 		while(true) {
 			com_rslt = bme280_set_sensor_mode(BME280_FORCED_MODE, &bme280);
 
-			bme280.delay_ms(40);
+			bme280.delay_us(40000, NULL);
 
 			com_rslt = bme280_get_sensor_data(BME280_ALL, &comp_data, &bme280);
 
